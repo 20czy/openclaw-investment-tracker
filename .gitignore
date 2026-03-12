@@ -1,0 +1,36 @@
+# 依赖
+node_modules/
+
+# 构建产物
+dist/
+dist-ssr/
+
+# 环境变量（含 API Key，不可提交）
+backend/.env
+
+# 数据库（本地数据，不可提交）
+backend/investment.db
+
+# Python 虚拟环境
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+
+# 日志
+*.log
+uvicorn.log
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Vite 缓存
+.vite/
+vite.config.ts.timestamp-*
