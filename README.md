@@ -1,4 +1,5 @@
 # 值·录 — 投资记录本
+<img width="1456" height="720" alt="Generated Image March 12, 2026 - 11_37AM" src="https://github.com/user-attachments/assets/a8b25423-3b77-4409-964c-1cfa050a581f" />
 
 对接了openclaw的skills，将investment-tracker-skill文件夹拖放到~/.openclaw/extensions文件夹中即可激活这个技能。现在将你的持仓截图上传给你的小龙🦞让它帮你进行管理吧！
 
