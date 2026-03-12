@@ -1,9 +1,9 @@
-# 值·录 — 投资记录本
+# openclaw-investment-tracker — 值·录 投资记录本
 <img width="1456" height="720" alt="Generated Image March 12, 2026 - 11_37AM" src="https://github.com/user-attachments/assets/a8b25423-3b77-4409-964c-1cfa050a581f" />
 
-对接了openclaw的skills，将investment-tracker-skill文件夹拖放到~/.openclaw/extensions文件夹中即可激活这个技能。现在将你的持仓截图上传给你的小龙🦞让它帮你进行管理吧！
+这是一款面向个人投资者的本地化投资组合管理工具，包含一个完整的数据看板，支持持仓管理、收益曲线、投资日志，以及通过 AI 视觉模型自动识别券商截图并导入持仓数据。
 
-值·录是一款面向个人投资者的本地化投资组合管理工具，包含一个完整的数据看板，对接了claude skill，支持持仓管理、收益曲线、投资日志，以及通过 AI 视觉模型自动识别券商截图并导入持仓数据。
+对接了openclaw的skills，将investment-tracker-skill文件夹拖放到~/.openclaw/extensions文件夹中即可激活这个技能。现在将你的持仓截图上传给你的小龙🦞让它帮你进行管理吧！
 
 ---
 
