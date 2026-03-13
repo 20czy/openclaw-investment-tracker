@@ -382,7 +382,7 @@ def analyze_image(req: AnalyzeRequest):
         context_parts.append(
             f"以下是当前系统中已有的持仓记录，请对照这些数据进行识别，"
             f"对于截图中已存在的股票尽量补全缺失字段，"
-            f"股票代码以系统记录为准（避免OCR错误）：\n{holdings_json}"
+            f"股票代码以系统记录为准（避免产生歧义）\n{holdings_json}"
         )
     context_suffix = "\n\n" + "\n".join(context_parts) if context_parts else ""
 

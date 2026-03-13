@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from "react";
+import React, { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import type { CSSProperties } from "react";
 import {
   AreaChart,
@@ -376,12 +376,189 @@ function AllocationPieChart({ slices, totalAssets }: AllocationPieChartProps) {
   );
 }
 
+// ─── Diary Heatmap ────────────────────────────────────────────────────────────
+function DiaryHeatmap({
+  diary,
+  selectedDate,
+  onDateClick,
+}: {
+  diary: DiaryEntry[];
+  selectedDate: string | null;
+  onDateClick: (date: string | null) => void;
+}) {
+  const [tooltip, setTooltip] = useState<{ x: number; y: number; text: string } | null>(null);
+
+  const { weeks, monthLabels, yearCount } = useMemo(() => {
+    const countMap: Record<string, number> = {};
+    diary.forEach((e) => { countMap[e.date] = (countMap[e.date] ?? 0) + 1; });
+
+    const now = new Date();
+    const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+
+    // Start from the Sunday of the week containing (today - 365 days)
+    const startD = new Date(now);
+    startD.setFullYear(now.getFullYear() - 1);
+    startD.setDate(startD.getDate() - startD.getDay());
+
+    const weeksArr: { date: string; count: number }[][] = [];
+    const monthLbls: { label: string; col: number }[] = [];
+    const cur = new Date(startD);
+    let col = 0;
+
+    while (cur.toISOString().slice(0, 10) <= todayStr) {
+      const week: { date: string; count: number }[] = [];
+      for (let d = 0; d < 7; d++) {
+        const dateStr = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, "0")}-${String(cur.getDate()).padStart(2, "0")}`;
+        week.push({ date: dateStr, count: countMap[dateStr] ?? 0 });
+        cur.setDate(cur.getDate() + 1);
+      }
+      // Month label: show at the week that first contains the 1st of a month
+      const firstDay = week.find((day) => day.date.slice(8) === "01");
+      if (firstDay) {
+        monthLbls.push({ label: `${parseInt(firstDay.date.slice(5, 7))}月`, col });
+      }
+      weeksArr.push(week);
+      col++;
+    }
+
+    const oneYearAgo = new Date(now);
+    oneYearAgo.setFullYear(now.getFullYear() - 1);
+    const oneYearAgoStr = `${oneYearAgo.getFullYear()}-${String(oneYearAgo.getMonth() + 1).padStart(2, "0")}-${String(oneYearAgo.getDate()).padStart(2, "0")}`;
+    const total = diary.filter((e) => e.date >= oneYearAgoStr).length;
+
+    return { weeks: weeksArr, monthLabels: monthLbls, yearCount: total };
+  }, [diary]);
+
+  const CELL = 11;
+  const GAP = 2;
+  const STEP = CELL + GAP;
+  const LEFT = 22;
+  const TOP = 20;
+  const DAY_LABELS = ["", "一", "", "三", "", "五", ""];
+
+  const now = new Date();
+  const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+
+  const colorFor = (count: number, date: string, isSelected: boolean): string => {
+    if (isSelected) return "#c9a96e";
+    if (date > todayStr) return "transparent";
+    if (count === 0) return "#1c1c1c";
+    if (count === 1) return "#2d4a3e";
+    if (count <= 3) return "#3d7a5e";
+    if (count <= 5) return "#5aab84";
+    return "#6dbf8c";
+  };
+
+  const svgW = LEFT + weeks.length * STEP;
+  const svgH = TOP + 7 * STEP + 2;
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+        <span style={{ fontSize: 11, color: "#555", fontFamily: "Georgia, serif", letterSpacing: "0.08em" }}>
+          过去一年共 <span style={{ color: "#c9a96e" }}>{yearCount}</span> 条记录
+        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ fontSize: 9, color: "#444", fontFamily: "Georgia, serif" }}>少</span>
+          {["#1c1c1c", "#2d4a3e", "#3d7a5e", "#5aab84", "#6dbf8c"].map((c) => (
+            <div key={c} style={{ width: CELL, height: CELL, borderRadius: 2, background: c, border: "1px solid #2a2a2a" }} />
+          ))}
+          <span style={{ fontSize: 9, color: "#444", fontFamily: "Georgia, serif" }}>多</span>
+        </div>
+      </div>
+      <div style={{ position: "relative", overflowX: "auto" }}>
+        <svg width={svgW} height={svgH} style={{ display: "block" }}>
+          {/* Month labels */}
+          {monthLabels.map(({ label, col }) => (
+            <text key={`m-${col}`} x={LEFT + col * STEP} y={13} fontSize={9} fill="#555" fontFamily="Georgia, serif">
+              {label}
+            </text>
+          ))}
+          {/* Day labels */}
+          {DAY_LABELS.map((label, di) =>
+            label ? (
+              <text
+                key={`d-${di}`}
+                x={LEFT - 4}
+                y={TOP + di * STEP + CELL - 1}
+                fontSize={8}
+                fill="#444"
+                fontFamily="Georgia, serif"
+                textAnchor="end"
+              >
+                {label}
+              </text>
+            ) : null
+          )}
+          {/* Cells */}
+          {weeks.map((week, wi) =>
+            week.map((day, di) => {
+              if (day.date > todayStr) return null;
+              const isSelected = day.date === selectedDate;
+              return (
+                <rect
+                  key={`${wi}-${di}`}
+                  x={LEFT + wi * STEP}
+                  y={TOP + di * STEP}
+                  width={CELL}
+                  height={CELL}
+                  rx={2}
+                  fill={colorFor(day.count, day.date, isSelected)}
+                  stroke={isSelected ? "#c9a96e" : "#1a1a1a"}
+                  strokeWidth={isSelected ? 1.5 : 0.5}
+                  style={{ cursor: "pointer" }}
+                  onClick={() => onDateClick(isSelected ? null : day.date)}
+                  onMouseEnter={(e) => {
+                    const svgEl = (e.target as SVGRectElement).ownerSVGElement!;
+                    const svgRect = svgEl.getBoundingClientRect();
+                    const rEl = (e.target as SVGRectElement).getBoundingClientRect();
+                    setTooltip({
+                      x: rEl.left - svgRect.left + CELL / 2,
+                      y: rEl.top - svgRect.top,
+                      text: day.count > 0 ? `${day.date}  ·  ${day.count} 条记录` : `${day.date}  ·  暂无记录`,
+                    });
+                  }}
+                  onMouseLeave={() => setTooltip(null)}
+                />
+              );
+            })
+          )}
+        </svg>
+        {tooltip && (
+          <div
+            style={{
+              position: "absolute",
+              left: tooltip.x,
+              top: tooltip.y,
+              transform: "translate(-50%, calc(-100% - 6px))",
+              background: "#1e1e1e",
+              color: "#d4c8b0",
+              fontSize: 10,
+              padding: "4px 10px",
+              borderRadius: 3,
+              border: "1px solid #333",
+              pointerEvents: "none",
+              whiteSpace: "nowrap",
+              zIndex: 10,
+              fontFamily: "Georgia, serif",
+              letterSpacing: "0.05em",
+            }}
+          >
+            {tooltip.text}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function InvestmentTracker() {
   const [tab, setTab] = useState<"portfolio" | "curve" | "diary" | "upload">("portfolio");
   const [holdings, setHoldings] = useState<Holding[]>([]);
   const [curve, setCurve] = useState<CurvePoint[]>([]);
   const [diary, setDiary] = useState<DiaryEntry[]>([]);
+  const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [uploadText, setUploadText] = useState<string>("");
   const [uploadDate, setUploadDate] = useState<string>(new Date().toISOString().slice(0, 10));
@@ -977,67 +1154,128 @@ export default function InvestmentTracker() {
   };
 
   // ─── TAB: Diary
-  const DiaryTab = () => (
-    <>
-      <div style={S.card as CSSProperties}>
-        <div style={S.cardTitle as CSSProperties}>新增记录</div>
-        <div style={{ display: "grid", gridTemplateColumns: "120px 90px 100px 1fr 90px", gap: 8, alignItems: "end" }}>
-          <div>
-            <div style={{ fontSize: 10, color: "#555", marginBottom: 4 }}>日期</div>
-            <input style={inputStyle} type="date" value={newEntry.date}
-              onChange={(e) => setNewEntry((p) => ({ ...p, date: e.target.value }))} />
+  const DiaryTab = () => {
+    const filteredDiary = selectedDate
+      ? diary.filter((e) => e.date === selectedDate)
+      : diary;
+
+    const typeColor: Record<string, string> = {
+      买入: "#6dbf8c", 卖出: "#e07070", 加仓: "#8dbfdf",
+      减仓: "#e0b070", 观察: "#a8956a", 复盘: "#9988cc",
+    };
+
+    return (
+      <>
+        {/* Heatmap card */}
+        <div style={S.card as CSSProperties}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+            <div style={S.cardTitle as CSSProperties}>记录频率</div>
+            {selectedDate && (
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ fontSize: 11, color: "#c9a96e", fontFamily: "Georgia, serif" }}>
+                  {selectedDate}
+                </span>
+                <button
+                  style={{
+                    padding: "2px 10px",
+                    border: "1px solid #333",
+                    borderRadius: 3,
+                    background: "transparent",
+                    color: "#888",
+                    fontSize: 10,
+                    letterSpacing: "0.06em",
+                    cursor: "pointer",
+                    fontFamily: "Georgia, serif",
+                  }}
+                  onClick={() => setSelectedDate(null)}
+                >
+                  清除筛选
+                </button>
+              </div>
+            )}
           </div>
-          <div>
-            <div style={{ fontSize: 10, color: "#555", marginBottom: 4 }}>类型</div>
-            <select style={inputStyle} value={newEntry.type}
-              onChange={(e) => setNewEntry((p) => ({ ...p, type: e.target.value }))}>
-              {["买入", "卖出", "加仓", "减仓", "观察", "复盘"].map((t) => <option key={t}>{t}</option>)}
-            </select>
-          </div>
-          <div>
-            <div style={{ fontSize: 10, color: "#555", marginBottom: 4 }}>代码</div>
-            <input style={inputStyle} placeholder="可选" value={newEntry.code}
-              onChange={(e) => setNewEntry((p) => ({ ...p, code: e.target.value }))} />
-          </div>
-          <div>
-            <div style={{ fontSize: 10, color: "#555", marginBottom: 4 }}>备注 / 投资逻辑</div>
-            <input style={inputStyle} placeholder="记录决策依据…" value={newEntry.remark}
-              onChange={(e) => setNewEntry((p) => ({ ...p, remark: e.target.value }))} />
-          </div>
-          <button style={btn(true)} onClick={addDiaryEntry}>添加</button>
+          <DiaryHeatmap diary={diary} selectedDate={selectedDate} onDateClick={setSelectedDate} />
         </div>
-      </div>
-      <div style={S.card as CSSProperties}>
-        <div style={S.cardTitle as CSSProperties}>交易日志</div>
-        <table style={S.table as CSSProperties}>
-          <thead>
-            <tr>
-              {["日期", "类型", "标的", "记录", "心态"].map((h) => (
-                <th key={h} style={S.th as CSSProperties}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {diary.map((entry) => {
-              const typeColor: Record<string, string> = {
-                买入: "#6dbf8c", 卖出: "#e07070", 加仓: "#8dbfdf",
-                减仓: "#e0b070", 观察: "#a8956a", 复盘: "#9988cc",
-              };
-              return (
-                <tr key={entry.id}>
-                  <td style={{ ...(S.td as CSSProperties), color: "#666", fontSize: 12 }}>{entry.date}</td>
-                  <td style={S.td as CSSProperties}><span style={badge(typeColor[entry.type] ?? "#888")}>{entry.type}</span></td>
-                  <td style={{ ...(S.td as CSSProperties), color: "#c9a96e" }}>{entry.code || "—"}</td>
-                  <td style={{ ...(S.td as CSSProperties), color: "#b8ac98", fontSize: 13 }}>{entry.remark}</td>
-                  <td style={{ ...(S.td as CSSProperties), color: "#666", fontSize: 11 }}>{entry.mood}</td>
+
+        {/* New entry form */}
+        <div style={S.card as CSSProperties}>
+          <div style={S.cardTitle as CSSProperties}>新增记录</div>
+          <div style={{ display: "grid", gridTemplateColumns: "120px 90px 100px 1fr 90px", gap: 8, alignItems: "end" }}>
+            <div>
+              <div style={{ fontSize: 10, color: "#555", marginBottom: 4 }}>日期</div>
+              <input style={inputStyle} type="date" value={newEntry.date}
+                onChange={(e) => setNewEntry((p) => ({ ...p, date: e.target.value }))} />
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: "#555", marginBottom: 4 }}>类型</div>
+              <select style={inputStyle} value={newEntry.type}
+                onChange={(e) => setNewEntry((p) => ({ ...p, type: e.target.value }))}>
+                {["买入", "卖出", "加仓", "减仓", "观察", "复盘"].map((t) => <option key={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: "#555", marginBottom: 4 }}>代码</div>
+              <input style={inputStyle} placeholder="可选" value={newEntry.code}
+                onChange={(e) => setNewEntry((p) => ({ ...p, code: e.target.value }))} />
+            </div>
+            <div>
+              <div style={{ fontSize: 10, color: "#555", marginBottom: 4 }}>备注 / 投资逻辑</div>
+              <input style={inputStyle} placeholder="记录决策依据…" value={newEntry.remark}
+                onChange={(e) => setNewEntry((p) => ({ ...p, remark: e.target.value }))} />
+            </div>
+            <button style={btn(true)} onClick={addDiaryEntry}>添加</button>
+          </div>
+        </div>
+
+        {/* Journal table */}
+        <div style={S.card as CSSProperties}>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+            <div style={{ ...S.cardTitle as CSSProperties, marginBottom: 0 }}>
+              交易日志
+              {selectedDate && (
+                <span style={{ color: "#c9a96e", marginLeft: 8, fontWeight: 400, textTransform: "none" }}>
+                  · {selectedDate}
+                </span>
+              )}
+            </div>
+            {selectedDate && (
+              <span style={{ fontSize: 11, color: "#555" }}>
+                {filteredDiary.length} 条
+              </span>
+            )}
+          </div>
+          <table style={S.table as CSSProperties}>
+            <thead>
+              <tr>
+                {["日期", "类型", "标的", "记录", "心态"].map((h) => (
+                  <th key={h} style={S.th as CSSProperties}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {filteredDiary.length === 0 ? (
+                <tr>
+                  <td colSpan={5} style={{ ...(S.td as CSSProperties), color: "#444", textAlign: "center", padding: "24px 0", fontSize: 12 }}>
+                    {selectedDate ? `${selectedDate} 暂无记录` : "暂无日志"}
+                  </td>
                 </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-    </>
-  );
+              ) : (
+                filteredDiary.map((entry) => (
+                  <tr key={entry.id}>
+                    <td style={{ ...(S.td as CSSProperties), color: "#666", fontSize: 12 }}>{entry.date}</td>
+                    <td style={S.td as CSSProperties}><span style={badge(typeColor[entry.type] ?? "#888")}>{entry.type}</span></td>
+                    <td style={{ ...(S.td as CSSProperties), color: "#c9a96e" }}>{entry.code || "—"}</td>
+                    <td style={{ ...(S.td as CSSProperties), color: "#b8ac98", fontSize: 13 }}>{entry.remark}</td>
+                    <td style={{ ...(S.td as CSSProperties), color: "#666", fontSize: 11 }}>{entry.mood}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </>
+    );
+  };
 
   // ─── TAB: Upload
   const UploadTab = () => {
