@@ -552,6 +552,18 @@ function DiaryHeatmap({
   );
 }
 
+// ─── Buy-detail form initial state ────────────────────────────────────────────
+const INIT_BUY_DETAIL = {
+  notes: "",
+  confidence: 3,
+  sentiment: "😐",
+  checklist: [false, false, false, false] as boolean[],
+  aiText: "",
+  aiPrice: null as number | null,
+  aiName: "",
+  aiLoading: false,
+};
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function InvestmentTracker() {
   const [tab, setTab] = useState<"portfolio" | "curve" | "diary" | "upload">("portfolio");
@@ -559,6 +571,8 @@ export default function InvestmentTracker() {
   const [curve, setCurve] = useState<CurvePoint[]>([]);
   const [diary, setDiary] = useState<DiaryEntry[]>([]);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
+  const [selectedEntry, setSelectedEntry] = useState<DiaryEntry | null>(null);
+  const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
   const [uploadText, setUploadText] = useState<string>("");
   const [uploadDate, setUploadDate] = useState<string>(new Date().toISOString().slice(0, 10));
@@ -571,6 +585,7 @@ export default function InvestmentTracker() {
     remark: "",
     mood: "理性",
   });
+  const [buyDetail, setBuyDetail] = useState({ ...INIT_BUY_DETAIL });
   const [cash, setCash] = useState<number>(0);
   const [cashInput, setCashInput] = useState<string>("");
   const [cashEditing, setCashEditing] = useState(false);
@@ -852,20 +867,94 @@ export default function InvestmentTracker() {
     } catch { /* ignore */ }
   };
 
+  const fetchStockInfo = useCallback(async (code: string) => {
+    if (!code || code.trim().length < 5) return;
+    setBuyDetail((p) => ({ ...p, aiLoading: true, aiText: "", aiPrice: null, aiName: "" }));
+    try {
+      const resp = await fetch(`${API_BASE}/api/stock-info?code=${encodeURIComponent(code.trim())}`);
+      if (!resp.body) return;
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      outer: while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          const raw = line.slice(6).trim();
+          if (raw === "[DONE]") break outer;
+          try {
+            const ev = JSON.parse(raw);
+            if (ev.type === "price") {
+              setBuyDetail((p) => ({ ...p, aiPrice: ev.price ?? null, aiName: ev.name ?? "" }));
+            } else if (ev.type === "text") {
+              setBuyDetail((p) => ({ ...p, aiText: p.aiText + (ev.delta ?? "") }));
+            }
+          } catch { /* skip malformed SSE line */ }
+        }
+      }
+    } catch { /* ignore network errors */ }
+    setBuyDetail((p) => ({ ...p, aiLoading: false }));
+  }, []);
+
   const addDiaryEntry = async () => {
-    if (!newEntry.remark) return;
+    let remark = newEntry.remark;
+    let mood = newEntry.mood;
+
+    if (newEntry.type === "买入") {
+      if (!buyDetail.notes.trim()) return; // require decision notes
+      remark = JSON.stringify({
+        _buy: true,
+        notes: buyDetail.notes,
+        confidence: buyDetail.confidence,
+        checklist: buyDetail.checklist,
+        ai_brief: buyDetail.aiText.slice(0, 400),
+      });
+      mood = buyDetail.sentiment;
+    } else {
+      if (!remark.trim()) return;
+    }
+
+    const payload = { ...newEntry, remark, mood };
     try {
       const saved = await fetch(`${API_BASE}/api/diary`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(newEntry),
+        body: JSON.stringify(payload),
       }).then((r) => r.json()) as DiaryEntry;
       setDiary((prev) => [saved, ...prev]);
     } catch {
-      setDiary((prev) => [{ ...newEntry, id: Date.now() }, ...prev]);
+      setDiary((prev) => [{ ...payload, id: Date.now() }, ...prev]);
     }
     setNewEntry({ date: new Date().toISOString().slice(0, 10), type: "观察", code: "", remark: "", mood: "理性" });
+    setBuyDetail({ ...INIT_BUY_DETAIL });
   };
+
+  const deleteDiaryEntry = async (id: number) => {
+    setDiary((prev) => prev.filter((e) => e.id !== id));
+    if (selectedEntry?.id === id) setSelectedEntry(null);
+    setDeleteConfirmId(null);
+    try {
+      await fetch(`${API_BASE}/api/diary/${id}`, { method: "DELETE" });
+    } catch { /* already removed from UI */ }
+  };
+
+  // Close detail modal on Escape or Space
+  useEffect(() => {
+    if (!selectedEntry) return;
+    const handler = (ev: KeyboardEvent) => {
+      if (ev.key === "Escape" || ev.key === " ") {
+        ev.preventDefault();
+        setSelectedEntry(null);
+        setDeleteConfirmId(null);
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [selectedEntry]);
 
   // ─── styles
   const S: Record<string, CSSProperties | ((...args: unknown[]) => CSSProperties)> = {
@@ -1164,6 +1253,33 @@ export default function InvestmentTracker() {
       减仓: "#e0b070", 观察: "#a8956a", 复盘: "#9988cc",
     };
 
+    const isBuy = newEntry.type === "买入";
+
+    // Parse structured buy-detail from remark JSON
+    const parseBuyDetail = (remark: string) => {
+      try { const d = JSON.parse(remark); if (d._buy) return d; } catch {}
+      return null;
+    };
+
+    const SENTIMENTS = [
+      { emoji: "😱", label: "极度恐惧" },
+      { emoji: "😨", label: "恐惧" },
+      { emoji: "😐", label: "中性" },
+      { emoji: "😊", label: "贪婪" },
+      { emoji: "🤩", label: "极度贪婪" },
+    ];
+
+    const CONFIDENCE_LEVELS = ["试探", "一般", "较有把握", "高度确信", "全力一击"];
+    const CHECKLIST_ITEMS = ["是否理解商业模式", "是否研究财报", "是否考虑风险", "是否估值合理"];
+
+    const taStyle: CSSProperties = {
+      ...inputStyle,
+      resize: "vertical" as const,
+      minHeight: 72,
+      lineHeight: 1.6,
+      fontSize: 13,
+    };
+
     return (
       <>
         {/* Heatmap card */}
@@ -1172,25 +1288,11 @@ export default function InvestmentTracker() {
             <div style={S.cardTitle as CSSProperties}>记录频率</div>
             {selectedDate && (
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <span style={{ fontSize: 11, color: "#c9a96e", fontFamily: "Georgia, serif" }}>
-                  {selectedDate}
-                </span>
+                <span style={{ fontSize: 11, color: "#c9a96e", fontFamily: "Georgia, serif" }}>{selectedDate}</span>
                 <button
-                  style={{
-                    padding: "2px 10px",
-                    border: "1px solid #333",
-                    borderRadius: 3,
-                    background: "transparent",
-                    color: "#888",
-                    fontSize: 10,
-                    letterSpacing: "0.06em",
-                    cursor: "pointer",
-                    fontFamily: "Georgia, serif",
-                  }}
+                  style={{ padding: "2px 10px", border: "1px solid #333", borderRadius: 3, background: "transparent", color: "#888", fontSize: 10, letterSpacing: "0.06em", cursor: "pointer", fontFamily: "Georgia, serif" }}
                   onClick={() => setSelectedDate(null)}
-                >
-                  清除筛选
-                </button>
+                >清除筛选</button>
               </div>
             )}
           </div>
@@ -1200,7 +1302,9 @@ export default function InvestmentTracker() {
         {/* New entry form */}
         <div style={S.card as CSSProperties}>
           <div style={S.cardTitle as CSSProperties}>新增记录</div>
-          <div style={{ display: "grid", gridTemplateColumns: "120px 90px 100px 1fr 90px", gap: 8, alignItems: "end" }}>
+
+          {/* Base row: date / type / code / remark (non-buy only) / add */}
+          <div style={{ display: "grid", gridTemplateColumns: isBuy ? "120px 90px 1fr auto" : "120px 90px 100px 1fr auto", gap: 8, alignItems: "end" }}>
             <div>
               <div style={{ fontSize: 10, color: "#555", marginBottom: 4 }}>日期</div>
               <input style={inputStyle} type="date" value={newEntry.date}
@@ -1213,18 +1317,164 @@ export default function InvestmentTracker() {
                 {["买入", "卖出", "加仓", "减仓", "观察", "复盘"].map((t) => <option key={t}>{t}</option>)}
               </select>
             </div>
-            <div>
-              <div style={{ fontSize: 10, color: "#555", marginBottom: 4 }}>代码</div>
-              <input style={inputStyle} placeholder="可选" value={newEntry.code}
-                onChange={(e) => setNewEntry((p) => ({ ...p, code: e.target.value }))} />
-            </div>
-            <div>
-              <div style={{ fontSize: 10, color: "#555", marginBottom: 4 }}>备注 / 投资逻辑</div>
-              <input style={inputStyle} placeholder="记录决策依据…" value={newEntry.remark}
-                onChange={(e) => setNewEntry((p) => ({ ...p, remark: e.target.value }))} />
-            </div>
-            <button style={btn(true)} onClick={addDiaryEntry}>添加</button>
+            {isBuy ? (
+              <div>
+                <div style={{ fontSize: 10, color: "#555", marginBottom: 4 }}>代码 <span style={{ color: "#444" }}>（输入后自动获取信息）</span></div>
+                <input
+                  style={inputStyle}
+                  placeholder="如 600519"
+                  value={newEntry.code}
+                  onChange={(e) => setNewEntry((p) => ({ ...p, code: e.target.value }))}
+                  onBlur={() => fetchStockInfo(newEntry.code)}
+                />
+              </div>
+            ) : (
+              <>
+                <div>
+                  <div style={{ fontSize: 10, color: "#555", marginBottom: 4 }}>代码</div>
+                  <input style={inputStyle} placeholder="可选" value={newEntry.code}
+                    onChange={(e) => setNewEntry((p) => ({ ...p, code: e.target.value }))} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 10, color: "#555", marginBottom: 4 }}>备注 / 投资逻辑</div>
+                  <input style={inputStyle} placeholder="记录决策依据…" value={newEntry.remark}
+                    onChange={(e) => setNewEntry((p) => ({ ...p, remark: e.target.value }))} />
+                </div>
+              </>
+            )}
+            <button style={{ ...btn(true), alignSelf: "flex-end" }} onClick={addDiaryEntry}>
+              {isBuy ? "记录买入" : "添加"}
+            </button>
           </div>
+
+          {/* ── Buy-specific expanded panel ── */}
+          {isBuy && (
+            <div style={{ marginTop: 20, borderTop: "1px solid #1e1e1e", paddingTop: 20 }}>
+
+              {/* A. AI stock info card */}
+              {(buyDetail.aiLoading || buyDetail.aiText || buyDetail.aiName) && (
+                <div style={{ background: "#1a160e", border: "1px solid #2e2618", borderRadius: 4, padding: "14px 16px", marginBottom: 20 }}>
+                  <div style={{ display: "flex", alignItems: "baseline", gap: 12, marginBottom: 8 }}>
+                    {buyDetail.aiName && (
+                      <span style={{ fontSize: 14, color: "#c9a96e", fontFamily: "Georgia, serif", fontWeight: 700 }}>
+                        {buyDetail.aiName}
+                      </span>
+                    )}
+                    {buyDetail.aiPrice != null && (
+                      <span style={{ fontSize: 13, color: "#6dbf8c", fontVariant: "tabular-nums" }}>
+                        ¥{buyDetail.aiPrice.toFixed(2)}
+                      </span>
+                    )}
+                    {buyDetail.aiLoading && (
+                      <span style={{ fontSize: 11, color: "#555", letterSpacing: "0.1em" }}>正在获取…</span>
+                    )}
+                  </div>
+                  {buyDetail.aiText && (
+                    <div style={{ fontSize: 13, color: "#b8ac98", lineHeight: 1.8, whiteSpace: "pre-wrap" }}>
+                      {buyDetail.aiText}
+                      {buyDetail.aiLoading && <span style={{ color: "#555" }}>▌</span>}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* B. Market sentiment */}
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 10, color: "#555", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 10 }}>市场先生的情绪</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {SENTIMENTS.map(({ emoji, label }) => {
+                    const active = buyDetail.sentiment === emoji;
+                    return (
+                      <button
+                        key={emoji}
+                        onClick={() => setBuyDetail((p) => ({ ...p, sentiment: emoji }))}
+                        style={{
+                          display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+                          padding: "10px 14px", border: `1px solid ${active ? "#c9a96e" : "#2a2a2a"}`,
+                          borderRadius: 4, background: active ? "#1a160e" : "transparent",
+                          cursor: "pointer", transition: "border-color 0.15s",
+                        }}
+                      >
+                        <span style={{ fontSize: 22 }}>{emoji}</span>
+                        <span style={{ fontSize: 9, color: active ? "#c9a96e" : "#555", letterSpacing: "0.05em", whiteSpace: "nowrap" }}>{label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* C. Decision notes */}
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 10, color: "#555", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 10 }}>决策记录</div>
+                <textarea
+                  style={{ ...taStyle, minHeight: 120 }}
+                  placeholder={"WHY   — 为什么买这只股票？护城河是什么？\nPRICE — 当前价格是否合理？PE / PB 如何？\nRISK  — 主要风险是什么？什么情况下逻辑不成立？\nEXIT  — 什么情况下卖出？目标价位是？"}
+                  value={buyDetail.notes}
+                  onChange={(e) => setBuyDetail((p) => ({ ...p, notes: e.target.value }))}
+                />
+              </div>
+
+              {/* D. Confidence level */}
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 10, color: "#555", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 10 }}>投资信心</div>
+                <div style={{ display: "flex", gap: 6 }}>
+                  {CONFIDENCE_LEVELS.map((label, i) => {
+                    const level = i + 1;
+                    const active = buyDetail.confidence === level;
+                    return (
+                      <button
+                        key={level}
+                        onClick={() => setBuyDetail((p) => ({ ...p, confidence: level }))}
+                        style={{
+                          padding: "6px 14px", border: `1px solid ${active ? "#c9a96e" : "#2a2a2a"}`,
+                          borderRadius: 3, background: active ? "#1a160e" : "transparent",
+                          color: active ? "#c9a96e" : "#555", fontSize: 11,
+                          cursor: "pointer", fontFamily: "Georgia, serif",
+                          letterSpacing: "0.04em", transition: "all 0.15s",
+                        }}
+                      >
+                        {level} {label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* E. Decision checklist */}
+              <div>
+                <div style={{ fontSize: 10, color: "#555", letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 10 }}>决策清单</div>
+                <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+                  {CHECKLIST_ITEMS.map((item, i) => {
+                    const checked = buyDetail.checklist[i];
+                    return (
+                      <label
+                        key={i}
+                        style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer", fontSize: 12, color: checked ? "#d4c8b0" : "#666" }}
+                      >
+                        <span
+                          onClick={() => setBuyDetail((p) => {
+                            const cl = [...p.checklist];
+                            cl[i] = !cl[i];
+                            return { ...p, checklist: cl };
+                          })}
+                          style={{
+                            display: "inline-flex", alignItems: "center", justifyContent: "center",
+                            width: 16, height: 16, borderRadius: 2,
+                            border: `1px solid ${checked ? "#6dbf8c" : "#333"}`,
+                            background: checked ? "#6dbf8c22" : "transparent",
+                            fontSize: 10, color: "#6dbf8c", cursor: "pointer", flexShrink: 0,
+                          }}
+                        >
+                          {checked ? "✓" : ""}
+                        </span>
+                        {item}
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Journal table */}
@@ -1239,17 +1489,16 @@ export default function InvestmentTracker() {
               )}
             </div>
             {selectedDate && (
-              <span style={{ fontSize: 11, color: "#555" }}>
-                {filteredDiary.length} 条
-              </span>
+              <span style={{ fontSize: 11, color: "#555" }}>{filteredDiary.length} 条</span>
             )}
           </div>
           <table style={S.table as CSSProperties}>
             <thead>
               <tr>
-                {["日期", "类型", "标的", "记录", "心态"].map((h) => (
+                {["日期", "类型", "标的", "记录"].map((h) => (
                   <th key={h} style={S.th as CSSProperties}>{h}</th>
                 ))}
+                <th style={{ ...(S.th as CSSProperties), width: 32 }} />
               </tr>
             </thead>
             <tbody>
@@ -1260,19 +1509,199 @@ export default function InvestmentTracker() {
                   </td>
                 </tr>
               ) : (
-                filteredDiary.map((entry) => (
-                  <tr key={entry.id}>
-                    <td style={{ ...(S.td as CSSProperties), color: "#666", fontSize: 12 }}>{entry.date}</td>
-                    <td style={S.td as CSSProperties}><span style={badge(typeColor[entry.type] ?? "#888")}>{entry.type}</span></td>
-                    <td style={{ ...(S.td as CSSProperties), color: "#c9a96e" }}>{entry.code || "—"}</td>
-                    <td style={{ ...(S.td as CSSProperties), color: "#b8ac98", fontSize: 13 }}>{entry.remark}</td>
-                    <td style={{ ...(S.td as CSSProperties), color: "#666", fontSize: 11 }}>{entry.mood}</td>
-                  </tr>
-                ))
+                filteredDiary.map((entry) => {
+                  const buyData = entry.type === "买入" ? parseBuyDetail(entry.remark) : null;
+                  return (
+                    <tr
+                      key={entry.id}
+                      onClick={() => setSelectedEntry(entry)}
+                      style={{ cursor: "pointer", transition: "background 0.1s" }}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = "#1a1a1a")}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                    >
+                      <td style={{ ...(S.td as CSSProperties), color: "#666", fontSize: 12, whiteSpace: "nowrap" }}>{entry.date}</td>
+                      <td style={S.td as CSSProperties}><span style={badge(typeColor[entry.type] ?? "#888")}>{entry.type}</span></td>
+                      <td style={{ ...(S.td as CSSProperties), color: "#c9a96e", whiteSpace: "nowrap" }}>{entry.code || "—"}</td>
+                      <td style={S.td as CSSProperties}>
+                        {buyData ? (
+                          <div>
+                            <div style={{ color: "#b8ac98", fontSize: 13, marginBottom: 4, lineHeight: 1.5 }}>
+                              {(() => {
+                                const text = buyData.notes || buyData.why || "";
+                                return text ? text.slice(0, 80) + (text.length > 80 ? "…" : "") : "—";
+                              })()}
+                            </div>
+                            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+                              <span style={{ color: "#c9a96e", fontSize: 11 }}>
+                                {"★".repeat(buyData.confidence ?? 0)}{"☆".repeat(5 - (buyData.confidence ?? 0))}
+                              </span>
+                              {Array.isArray(buyData.checklist) && (
+                                <span style={{ fontSize: 10, color: "#555" }}>
+                                  ✓ {buyData.checklist.filter(Boolean).length}/{buyData.checklist.length}
+                                </span>
+                              )}
+                              {buyData.sentiment && (
+                                <span style={{ fontSize: 14 }}>{buyData.sentiment}</span>
+                              )}
+                            </div>
+                          </div>
+                        ) : (
+                          <span style={{ color: "#b8ac98", fontSize: 13 }}>{entry.remark}</span>
+                        )}
+                      </td>
+                      <td
+                        style={{ ...(S.td as CSSProperties), width: deleteConfirmId === entry.id ? 120 : 36, padding: "0 8px", textAlign: "right", whiteSpace: "nowrap", transition: "width 0.15s" }}
+                        onClick={(ev) => ev.stopPropagation()}
+                      >
+                        {deleteConfirmId === entry.id ? (
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                            <button
+                              onClick={() => deleteDiaryEntry(entry.id)}
+                              style={{ padding: "2px 8px", border: "1px solid #e07070", borderRadius: 3, background: "#e0707022", color: "#e07070", fontSize: 10, cursor: "pointer", fontFamily: "Georgia, serif", letterSpacing: "0.04em" }}
+                            >确认</button>
+                            <button
+                              onClick={() => setDeleteConfirmId(null)}
+                              style={{ padding: "2px 6px", border: "1px solid #333", borderRadius: 3, background: "transparent", color: "#555", fontSize: 10, cursor: "pointer", fontFamily: "Georgia, serif" }}
+                            >取消</button>
+                          </span>
+                        ) : (
+                          <span
+                            onClick={() => setDeleteConfirmId(entry.id)}
+                            style={{ color: "#2e2e2e", fontSize: 13, cursor: "pointer", lineHeight: 1, display: "inline-block", transition: "color 0.15s", userSelect: "none" }}
+                            onMouseEnter={(ev) => (ev.currentTarget.style.color = "#e07070")}
+                            onMouseLeave={(ev) => (ev.currentTarget.style.color = "#2e2e2e")}
+                            title="删除此记录"
+                          >✕</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
         </div>
+
+        {/* ── Entry detail modal ── */}
+        {selectedEntry && (() => {
+          const e = selectedEntry;
+          const bd = e.type === "买入" ? parseBuyDetail(e.remark) : null;
+          const CONFIDENCE_LABELS = ["", "试探", "一般", "较有把握", "高度确信", "全力一击"];
+          const CHECKLIST_ITEMS = ["是否理解商业模式", "是否研究财报", "是否考虑风险", "是否估值合理"];
+          const sectionLabel: CSSProperties = {
+            fontSize: 10, color: "#555", letterSpacing: "0.12em",
+            textTransform: "uppercase", marginBottom: 8,
+          };
+          const divider: CSSProperties = {
+            borderTop: "1px solid #1e1e1e", margin: "18px 0",
+          };
+          return (
+            <div
+              style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.75)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 200, padding: 32 }}
+              onClick={(ev) => { if (ev.target === ev.currentTarget) setSelectedEntry(null); }}
+            >
+              <div style={{ background: "#141414", border: "1px solid #2a2a2a", borderRadius: 6, width: "100%", maxWidth: 720, padding: "32px 36px 28px", position: "relative", fontFamily: "Georgia, serif" }}>
+                {/* Close */}
+                <button
+                  onClick={() => setSelectedEntry(null)}
+                  style={{ position: "absolute", top: 14, right: 16, background: "none", border: "none", color: "#555", fontSize: 18, cursor: "pointer", lineHeight: 1 }}
+                >✕</button>
+
+                {/* Header */}
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                  <span style={badge(typeColor[e.type] ?? "#888")}>{e.type}</span>
+                  {e.code && <span style={{ fontSize: 17, color: "#c9a96e", fontWeight: 700 }}>{e.code}</span>}
+                  {bd?.aiName && e.code && <span style={{ fontSize: 13, color: "#888" }}>{bd.aiName}</span>}
+                </div>
+                <div style={{ fontSize: 11, color: "#555", marginBottom: 20, letterSpacing: "0.06em" }}>{e.date}</div>
+
+                {bd ? (
+                  <>
+                    {/* Sentiment + confidence row */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 18 }}>
+                      {bd.sentiment && (
+                        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 3 }}>
+                          <span style={{ fontSize: 28 }}>{bd.sentiment}</span>
+                          <span style={{ fontSize: 9, color: "#555", letterSpacing: "0.06em" }}>市场情绪</span>
+                        </div>
+                      )}
+                      {bd.confidence > 0 && (
+                        <div>
+                          <div style={{ color: "#c9a96e", fontSize: 15, letterSpacing: "0.04em", marginBottom: 2 }}>
+                            {"★".repeat(bd.confidence)}{"☆".repeat(5 - bd.confidence)}
+                          </div>
+                          <div style={{ fontSize: 10, color: "#666" }}>
+                            信心 {bd.confidence}/5 · {CONFIDENCE_LABELS[bd.confidence]}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* AI brief */}
+                    {bd.ai_brief && (
+                      <>
+                        <div style={sectionLabel}>投资标的简介</div>
+                        <div style={{ fontSize: 12, color: "#888", lineHeight: 1.8, background: "#111", border: "1px solid #1e1e1e", borderRadius: 4, padding: "10px 14px", marginBottom: 4, whiteSpace: "pre-wrap" }}>
+                          {bd.ai_brief}
+                        </div>
+                        <div style={divider} />
+                      </>
+                    )}
+
+                    {/* Decision notes */}
+                    {(bd.notes || bd.why) && (
+                      <>
+                        <div style={sectionLabel}>决策记录</div>
+                        <div style={{ fontSize: 13, color: "#b8ac98", lineHeight: 1.9, whiteSpace: "pre-wrap", marginBottom: 4 }}>
+                          {bd.notes || bd.why}
+                        </div>
+                        <div style={divider} />
+                      </>
+                    )}
+
+                    {/* Checklist */}
+                    {Array.isArray(bd.checklist) && (
+                      <>
+                        <div style={sectionLabel}>决策清单</div>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 16px" }}>
+                          {CHECKLIST_ITEMS.map((item, i) => {
+                            const checked = bd.checklist[i];
+                            return (
+                              <div key={i} style={{ display: "flex", alignItems: "center", gap: 7, fontSize: 12, color: checked ? "#d4c8b0" : "#555" }}>
+                                <span style={{ fontSize: 12, color: checked ? "#6dbf8c" : "#333" }}>
+                                  {checked ? "✓" : "○"}
+                                </span>
+                                {item}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  /* Plain entry */
+                  <>
+                    {e.remark && (
+                      <>
+                        <div style={sectionLabel}>记录内容</div>
+                        <div style={{ fontSize: 13, color: "#b8ac98", lineHeight: 1.9, whiteSpace: "pre-wrap" }}>
+                          {e.remark}
+                        </div>
+                      </>
+                    )}
+                    {e.mood && e.mood !== "理性" && (
+                      <>
+                        <div style={divider} />
+                        <div style={{ fontSize: 12, color: "#666" }}>心态：{e.mood}</div>
+                      </>
+                    )}
+                  </>
+                )}
+              </div>
+            </div>
+          );
+        })()}
       </>
     );
   };

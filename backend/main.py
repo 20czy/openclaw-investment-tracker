@@ -12,6 +12,7 @@ import yfinance as yf
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from openai import OpenAI
 from pydantic import BaseModel
 
@@ -219,6 +220,13 @@ def add_diary_entry(entry: DiaryEntryIn):
         )
         row = conn.execute("SELECT * FROM diary WHERE id = ?", (cur.lastrowid,)).fetchone()
         return dict(row)
+
+
+@app.delete("/api/diary/{entry_id}")
+def delete_diary_entry(entry_id: int):
+    with get_db() as conn:
+        conn.execute("DELETE FROM diary WHERE id = ?", (entry_id,))
+    return {"ok": True}
 
 
 # ─── Import history endpoints ─────────────────────────────────────────────────
@@ -518,3 +526,71 @@ async def external_upload(
         "total_pnl": parsed.get("total_pnl"),
         "diff": diff,
     }
+
+
+# ─── Stock info streaming endpoint ───────────────────────────────────────────
+
+def _yf_code(code: str) -> str:
+    """Convert a bare A-share code to its Yahoo Finance ticker symbol."""
+    code = code.strip()
+    if code.startswith("6"):
+        return code + ".SS"
+    elif code.startswith(("0", "3")):
+        return code + ".SZ"
+    return code + ".BJ"
+
+
+@app.get("/api/stock-info")
+def stream_stock_info(code: str):
+    """
+    Stream basic stock information for an A-share code.
+    Emits SSE events:
+      {"type":"price","price":float|null,"name":string}
+      {"type":"text","delta":string}   (multiple, from Qwen)
+      [DONE]
+    """
+    api_key = os.getenv("DASHSCOPE_API_KEY", "")
+
+    def generate():
+        # 1. Try yfinance for real-time price
+        price_event: dict = {"type": "price", "price": None, "name": ""}
+        try:
+            info = yf.Ticker(_yf_code(code)).info
+            price = info.get("regularMarketPrice") or info.get("currentPrice")
+            price_event["price"] = round(float(price), 2) if price else None
+            price_event["name"] = info.get("shortName") or info.get("longName") or ""
+        except Exception:
+            pass
+        yield f"data: {json.dumps(price_event, ensure_ascii=False)}\n\n"
+
+        # 2. Stream AI description (skip if no API key)
+        if not api_key or api_key.startswith("sk-xxx"):
+            yield "data: [DONE]\n\n"
+            return
+
+        prompt = (
+            f"你是一名专业的投资研究助手。请用中文简要介绍A股上市公司（代码：{code}）。"
+            f"输出内容应简洁清晰，重点向投资者介快速理解公司的主营业务"
+            f"语言简洁，总字数不超过 300 字"
+        )
+        try:
+            stream = _qwen_client.chat.completions.create(
+                model="qwen3.5-flash",
+                stream=True,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            for chunk in stream:
+                delta = chunk.choices[0].delta.content or ""
+                if delta:
+                    yield f"data: {json.dumps({'type': 'text', 'delta': delta}, ensure_ascii=False)}\n\n"
+        except Exception as e:
+            err = {"type": "text", "delta": f"（简介获取失败：{e}）"}
+            yield f"data: {json.dumps(err, ensure_ascii=False)}\n\n"
+
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
