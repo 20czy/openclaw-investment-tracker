@@ -1,5 +1,5 @@
 # openclaw-investment-tracker — 值·录 投资记录本
-<img width="1456" height="720" alt="Generated Image March 12, 2026 - 11_37AM" src="https://github.com/user-attachments/assets/a8b25423-3b77-4409-964c-1cfa050a581f" />
+![Generated Image March 22, 2026 - 10_00AM](https://github.com/user-attachments/assets/9be76434-e88c-4403-bdd1-3e77e9871831)
 
 这是一款对接openclaw skill的面向个人投资者的本地化投资组合管理工具，包含一个完整的数据看板，支持持仓管理、收益曲线、投资日志，以及通过 AI 视觉模型自动识别券商截图并导入持仓数据。
 
