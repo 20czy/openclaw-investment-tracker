@@ -1,4 +1,4 @@
-# openclaw-investment-tracker — 值·录 投资记录本
+# openclaw-investment-tracker — 小龙虾投资记录本
 <p align="center">
   <img src="https://github.com/user-attachments/assets/9be76434-e88c-4403-bdd1-3e77e9871831" width="400"/>
 </p>
